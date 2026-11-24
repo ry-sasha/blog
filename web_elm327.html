@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>ELM327 Hyundai D3EA (EDC15C7) Терминал</title>
+  <style>
+    body { font-family: monospace; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+    button, select, input { padding: 8px 12px; font-family: monospace; font-size: 14px; margin: 4px 2px; }
+    button { cursor: pointer; background: #0e639c; color: white; border: none; border-radius: 3px; }
+    button:hover { background: #1177bb; }
+    button.init { background: #2ea043; }
+    #log { width: 100%; height: 350px; background: #000; color: #0f0; padding: 10px; overflow-y: auto; border: 1px solid #444; box-sizing: border-box; white-space: pre-wrap; margin-top: 10px; }
+    .controls { margin-bottom: 10px; }
+  </style>
+</head>
+<body>
+
+  <div class="controls">
+    <select id="baud">
+      <option value="38400" selected>38400 baud (Стандарт ELM327)</option>
+      <option value="9600">9600 baud</option>
+      <option value="115200">115200 baud</option>
+    </select>
+    <button id="btnConnect">1. Подключить COM-порт</button>
+    <button id="btnInit" class="init" disabled>2. Инициализация Hyundai D3EA (0x10)</button>
+  </div>
+
+  <div class="controls">
+    <input type="text" id="cmdInput" placeholder="Команда (напр. 21 01)" disabled>
+    <button id="btnSend" disabled>Отправить</button>
+    <button id="btn2101" disabled>Запрос 21 01</button>
+    <button id="btn2102" disabled>Запрос 21 02</button>
+    <button id="btnClear">Очистить</button>
+  </div>
+
+  <div id="log">Ожидание подключения...</div>
+
+  <script>
+    let port, writer, reader;
+    const logEl = document.getElementById('log');
+    const log = (msg) => {
+      logEl.textContent += '\n' + msg;
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    async function sendCommand(cmd) {
+      if (!writer) return;
+      log(`> ${cmd}`);
+      const encoder = new TextEncoder();
+      await writer.write(encoder.encode(cmd + '\r'));
+    }
+
+    document.getElementById('btnConnect').onclick = async () => {
+      try {
+        port = await navigator.serial.requestPort();
+        const baudRate = parseInt(document.getElementById('baud').value);
+        await port.open({ baudRate });
+        writer = port.writable.getWriter();
+        
+        log(`[OK] Порт открыт на скорости ${baudRate}`);
+        document.getElementById('btnInit').disabled = false;
+        document.getElementById('cmdInput').disabled = false;
+        document.getElementById('btnSend').disabled = false;
+        document.getElementById('btn2101').disabled = false;
+        document.getElementById('btn2102').disabled = false;
+
+        readLoop();
+      } catch (err) {
+        log(`[ERR] ${err.message}`);
+      }
+    };
+
+    async function readLoop() {
+      const decoder = new TextDecoder();
+      while (port.readable) {
+        reader = port.readable.getReader();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            if (value) {
+              const text = decoder.decode(value).replace(/\r/g, '\n');
+              logEl.textContent += text;
+              logEl.scrollTop = logEl.scrollHeight;
+            }
+          }
+        } catch (err) {
+          log(`[READ ERR] ${err.message}`);
+        } finally {
+          reader.releaseLock();
+        }
+      }
+    }
+
+    // Автоматическая последовательность инициализации для Bosch EDC15C7 (Hyundai D3EA)
+    document.getElementById('btnInit').onclick = async () => {
+      const initSequence = [
+        { cmd: 'ATZ', delay: 1000 },         // Сброс адаптера
+        { cmd: 'ATE0', delay: 300 },         // Выключить эхо
+        { cmd: 'ATL0', delay: 300 },         // Убрать лишние переводы строк
+        { cmd: 'ATSP5', delay: 300 },        // Протокол KWP2000 Fast Init
+        { cmd: 'ATIIA 10', delay: 300 },     // Физический адрес ЭБУ двигателя (0x10)
+        { cmd: 'ATSH 81 10 F1', delay: 300 },// Заголовок пакета (физическая адресация)
+        { cmd: 'ATWM 81 10 F1 3E', delay: 300 }, // Поддержание связи (TesterPresent)
+        { cmd: '81', delay: 800 }            // StartCommunication (старт сессии)
+      ];
+
+      for (const step of initSequence) {
+        await sendCommand(step.cmd);
+        await sleep(step.delay);
+      }
+    };
+
+    document.getElementById('btnSend').onclick = () => {
+      const input = document.getElementById('cmdInput');
+      if (input.value.trim()) {
+        sendCommand(input.value.trim());
+        input.value = '';
+      }
+    };
+
+    document.getElementById('cmdInput').addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('btnSend').click();
+    });
+
+    document.getElementById('btn2101').onclick = () => sendCommand('21 01');
+    document.getElementById('btn2102').onclick = () => sendCommand('21 02');
+    document.getElementById('btnClear').onclick = () => { logEl.textContent = ''; };
+  </script>
+</body>
+</html>
